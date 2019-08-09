@@ -1,0 +1,288 @@
+---
+title: "RNASeq pipeline for beginners"
+author: "Sherry Dong"
+date: "8/8/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Note**: RNASeq pipeline for beginners
+
+Lot of pipelines could be used for RNASeq analysis, you could check: https://github.com/crazyhottommy/RNA-seq-analysis.
+
+Here, I just show my common used pipeline, the salmon --> DESeq pipeline, and further visualization could be put it into NetBID2 (currently not available, later could be at https://github.com/jyyulab/NetBID-dev or https://github.com/jyyulab/NetBID2). There will be online tutorial for NetBID2 pipeline.
+
+### Step1, fastq --> count, tpm
+
+Use [salmon](https://salmon.readthedocs.io/en/latest/) to directly run the pipeline that will skip the mapping step. It is a good tool if you only want the quantity for each sample.
+
+#### 1.1 Prepare reference
+
+I. Download human transcriptomic sequence from GENCODE
+
+GO TO: https://www.gencodegenes.org/human/
+
+Download the Fasta files, you could choose: 
+Transcript sequence (ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_31/gencode.v31.transcripts.fa.gz).
+
+You could download it in your server by the command:
+
+```bash
+wget ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_31/gencode.v31.transcripts.fa.gz
+gunzip gencode.v31.transcripts.fa.gz 
+```
+
+II. Download `salmon` and install it into your server
+
+GO TO: https://github.com/COMBINE-lab/salmon/releases
+
+Download the binary version of salmon, you could choose:
+https://github.com/COMBINE-lab/salmon/releases/download/v0.14.1/salmon-0.14.1_linux_x86_64.tar.gz
+
+You could download it in your server by the command:
+
+```bash
+wget https://github.com/COMBINE-lab/salmon/releases/download/v0.14.1/salmon-0.14.1_linux_x86_64.tar.gz
+tar -xvf salmon-0.14.1_linux_x86_64.tar.gz
+# and the binary salmon will be in 
+ls salmon-latest_linux_x86_64/bin/salmon
+# you could choose to put it into a place that could be found easily next time, such as /home/${username}/bin, put your real username in it.
+mkdir /home/${username}/bin
+cd /home/${username}/bin
+cp XXX/salmon-latest_linux_x86_64/bin/salmon . ## XXX represent your real path of salmon
+```
+
+III. Generate index files
+
+Generate a directory to save the index files and run the salmon:
+
+```bash
+mkdir /home/${username}/db
+mkdir /home/${username}/db/salmon_reference/
+/home/${username}/bin/salmon index -t XXX/gencode.v31.transcripts.fa -i /home/${username}/db/salmon_reference/Salmon_index_hg38 --type quasi -k 31 
+## XXX represent your real path of downloaded fasta file 
+```
+
+#### 1.2 Prepare working directory
+
+I just show you the way I manage the working directory of a project:
+
+I. Create a working directory
+
+```bash
+mkdir /home/${username}/project
+mkdir /home/${username}/project/${project_name}/ ## put you real project name into it
+mkdir /home/${username}/project/${project_name}/src/ ## create directory to save source code
+mkdir /home/${username}/project/${project_name}/task/ ## create directory to save batch bash files
+mkdir /home/${username}/project/${project_name}/data/ ## create directory to save data
+mkdir /home/${username}/project/${project_name}/result/ ## create directory to save result
+touch /home/${username}/project/${project_name}/README.txt ## create one readme file to record each command
+```
+
+II. Put your fastq files into the data directory
+
+```bash
+cp XXX/***.fq.gz /home/${username}/project/${project_name}/data/
+```
+
+#### 1.3 Run salmon
+
+If you directly run each sample, just use the command below:
+
+```bash
+/home/${username}/bin/salmon quant -i  /home/${username}/db/salmon_reference/Salmon_index_hg38 -l A -1 ${Sample1}.R1.fq.gz -2 ${Sample1}.R2.fq.gz -o /home/${username}/project/${project_name}/result/${Sample1}_salmon ## ${Sample1}.R1.fq.gz,${Sample1}.R2.fq.gz paired fastq files, ${Sample1}_salmon the output directory
+```
+
+Mostly we will write an another script to generate a batch bash script file.
+A demo perl script, put the code below into `/home/${username}/project/${project_name}/src/run_salmon.pl`:
+
+```perl
+#!/usr/bin/perl -w
+$username = "XXX"; ## replace with real value
+$project_name = "XXX"; ## replace with real value
+$main_dir = "/home/${username}/project/${project_name}/";
+$salmon = "/home/${username}/bin/salmon";
+$ref = "/home/${username}/db/salmon_reference/Salmon_index_hg38";
+
+@all = split "\n",`ls $main_dir/data/`;
+foreach $each (@all){
+        if($each =~ /(.*).R1.fq.gz/){ ## this may be modified
+                $name = $1;
+                $fastq{$name}{$each} = 1;
+        }
+}
+##
+foreach $name (keys %fastq){
+        undef(@R1);
+        undef(@R2);
+        foreach $f1 (sort(keys %{$fastq{$name}})){
+                $f2 = $f1;
+                $f2 =~ s/R1/R2/g;
+                $ff1 = "$main_dir/data/$f1";
+                $ff2 = "$main_dir/data/$f2";
+                if(-e $ff1 && -e $ff2){
+                        push(@R1,$ff1);
+                        push(@R2,$ff2);
+                }else{
+                        print "Error, check $ff1,$ff2\n";
+                }
+        }
+        $R1 = join " ",@R1;
+        $R2 = join " ",@R2;
+        $out = "$main_dir/result/${name}_salmon";
+        $cmd = "$salmon quant -i $ref -l A -1 $R1 -2 $R2 -o $out";
+        print $cmd."\n";
+}
+```
+
+Next, run the script to generate the batch bash file:
+
+```bash
+perl /home/${username}/project/${project_name}/src/run_salmon.pl >/home/${username}/project/${project_name}/task/run_salmon.sh
+```
+
+Then, run the bash file, two ways, one is directly calling in your current environment:
+
+```bash
+source /home/${username}/project/${project_name}/task/run_salmon.sh
+```
+
+Another is to submit into cluster, different cluster may use different strategy of submitting the job.
+
+A demo perl script to generate code for `bsub`, put the code below into `/home/${username}/project/${project_name}/src/run_bsub.pl`:
+
+
+```perl
+#!/usr/bin/perl -w
+$input = "/home/${username}/project/${project_name}/task/run_salmon.sh";
+$project = ${project_name};
+$ncore = 1;
+$mem = 10240; ## memory, may need to modify
+$output = $input;
+$output =~ s/.sh/_bsub.sh/g; ## output file name
+##
+open I,$input or die $!;
+open O,">$output" or die $!;
+while(<I>){
+	chomp;
+	$sh = $_;
+	$cmd = "bsub -R \"rusage[mem=$mem]\" -n $ncore -R \"span[hosts=10]\" -P BrainTumor -J $project -oo $project.out -eo $project.err \"$sh\"";
+	print O $cmd."\n";
+}
+close I;
+close O;
+```
+
+Next, run the script to generate the batch bsub bash file:
+
+```bash
+perl /home/${username}/project/${project_name}/src/run_bsub.pl
+```
+
+Then, run the bash file:
+
+```bash
+source /home/${username}/project/${project_name}/task/run_salmon_bsub.sh
+```
+
+You could use `bjobs` to check the status of the submitted job.
+
+### Step2, tpm --> read into R
+
+When all jobs finished, you could use the command to check the existence of the output files:
+
+```bash
+ls -lrt /home/${username}/project/${project_name}/result/*/quant.sf
+```
+
+The next step is to read all those files into R, you could directly use the function in `NetBID2`,
+
+```r
+sample_info <- data.frame(sampleID=XXX,group=XXX,stringsAsFactors=FALSE) ## need to create a data frame to indicate sample group information
+eset <- load.exp.RNASeq.demoSalmon(salmon_dir='/home/${username}/project/${project_name}/result',
+            use_phenotype_info=sample_info,
+            use_sample_col='sampleID',
+            use_design_col='group',
+            return_type='eset')
+```
+
+Then, you could follow the online tutorial of `NetBID2` to do the following analysis.
+
+If you only want the differential expression analysis, you could:
+
+```r
+sample_info <- data.frame(sampleID=XXX,group=XXX,stringsAsFactors=FALSE) ## need to create a data frame to indicate sample group information
+dds <- load.exp.RNASeq.demoSalmon(salmon_dir='/home/${username}/project/${project_name}/result',
+            use_phenotype_info=sample_info,
+            use_sample_col='sampleID',
+            use_design_col='group',
+            return_type='dds')
+res <- results(dds, contrast=c("group","group_case","group_control")) ## replace the `group_case`,`group_control` to the real sample group name
+```
+
+Finally, output the results, one simple way is to use function in `NetBID2`:
+
+```r
+res1 <- as.data.frame(res); res1$ID <- rownames(res)
+out2excel(res1,out.xlsx='result.xlsx')
+```
+
+---
+
+**Note**: RPM, RPKM/FPKM and TPM, please check: https://www.biostars.org/p/273537/ , https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4728800/ for detailed description.
+
+-- RPM: reads per million mapped reads
+-- FPM: fragments per million mapped fragments
+-- CPM: counts per million mapped fragments
+FPM/RPM does not consider the transcript length normalization.
+FPM/RPM Suitable for sequencing protocols where reads are generated irrespective of gene length
+
+-- RPKM: reads per kilobase per million mapped reads
+-- FPKM: fragments per kilobase per million mapped fragments
+FPKM/RPKM considers the gene length for normalization
+FPKM/RPKM is suitable for sequencing protocols where reads sequencing depends on gene length
+RPKM used in single-end RNA-seq experiments, FPKM for paired-end RNA-seq data
+
+-- TPM: Transcript per million
+TPM considers the gene length for normalization
+TPM proposed as an alternative to RPKM due to inaccuracy in RPKM measurement (Wagner et al., 2012)
+TPM is suitable for sequencing protocols where reads sequencing depends on gene length
+
+-- Comparison:
+In TPM, we adjust 'transcripts' in TPM while we adjust 'reads' in FPKM.
+
+-- Transfer from to fpm, fpkm by using functions in `DESeq`.Below is an demo of how to use the function.
+
+```r
+library(DESeq2)
+
+m <- matrix(1e6 * rep(c(.125, .25, .25, .5), each=4),
+            ncol=4, dimnames=list(1:4,1:4))
+mode(m) <- "integer"
+se <- SummarizedExperiment(list(counts=m), colData=DataFrame(sample=1:4))
+dds <- DESeqDataSet(se, ~ 1)
+
+# create 4 GRanges with lengths: 1, 1, 2, 2.5 Kb
+gr1 <- GRanges("chr1",IRanges(1,1000)) # 1kb
+gr2 <- GRanges("chr1",IRanges(c(1,1001),c( 500,1500))) # 1kb
+gr3 <- GRanges("chr1",IRanges(c(1,1001),c(1000,2000))) # 2kb
+gr4 <- GRanges("chr1",IRanges(c(1,1001),c(200,1300))) # 500bp
+rowRanges(dds) <- GRangesList(gr1,gr2,gr3,gr4)
+
+# the raw counts
+counts(dds)
+
+# the FPM values
+fpm(dds)
+
+# the FPKM values
+fpkm(dds)
+```
+
+
+
+
+
